@@ -795,81 +795,77 @@ async def get_completed_evaluation(
         "success": True,
         "data": obj
     }
-
 @app.post("/api/objects/{object_id}/rate", response_model=Dict[str, Any])
 async def rate_object_description(
     object_id: str,
     rating_data: Dict[str, Any] = Body(...),
     user=Depends(get_current_user)
 ):
-    """Rate an object's description"""
+    """Rate an object's description with multiple metrics"""
     obj = db.objects.find_one({"objectId": object_id})
     
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
     
-    # Validate rating
-    if "score" not in rating_data or not isinstance(rating_data["score"], int) or not (1 <= rating_data["score"] <= 5):
-        raise HTTPException(status_code=400, detail="Rating must be an integer between 1 and 5")
+    # Make sure we have a ratings object with all three required metrics
+    if "ratings" not in rating_data or not isinstance(rating_data["ratings"], dict):
+        raise HTTPException(status_code=400, detail="Ratings object is required")
     
-    # Get metric type (accuracy, completeness, clarity)
-    metric = rating_data.get("metric", "general")
+    ratings_obj = rating_data["ratings"]
+    required_metrics = ["accuracy", "completeness", "clarity"]
     
-    # Create rating document
-    rating = {
-        "userId": user["userId"],
-        "score": rating_data["score"],
-        "metric": metric,
-        "timestamp": datetime.now(dt.timezone.utc)
-    }
+    # Validate that all metrics are provided and are valid scores
+    for metric in required_metrics:
+        if metric not in ratings_obj or not isinstance(ratings_obj[metric], int) or not 1 <= ratings_obj[metric] <= 5:
+            raise HTTPException(status_code=400, detail=f"{metric} rating must be an integer between 1 and 5")
     
-    # Add comment if provided
-    if "comment" in rating_data and rating_data["comment"]:
-        rating["comment"] = rating_data["comment"]
+    # Get any comments
+    comments = rating_data.get("comments", "")
     
-    # Check if user has already rated this object with this metric
-    existing_rating = next((r for r in obj.get("ratings", []) 
-                           if r.get("userId") == user["userId"] and r.get("metric", "general") == metric), None)
+    # Create rating documents for each metric
+    now = datetime.now(dt.timezone.utc)
+    ratings_to_insert = []
     
-    if existing_rating:
-        # Update existing rating
-        db.objects.update_one(
-            {"objectId": object_id, "ratings": {"$elemMatch": {"userId": user["userId"], "metric": metric}}},
-            {
-                "$set": {
-                    "ratings.$": rating,
-                    "updatedAt": datetime.now(dt.timezone.utc)
-                }
+    for metric in required_metrics:
+        rating = {
+            "userId": user["userId"],
+            "score": ratings_obj[metric],
+            "metric": metric,
+            "timestamp": now
+        }
+        
+        # Add comment only to the first metric
+        if metric == "accuracy" and comments:
+            rating["comment"] = comments
+        
+        ratings_to_insert.append(rating)
+    
+    # Remove any existing ratings by this user for this object
+    db.objects.update_one(
+        {"objectId": object_id},
+        {"$pull": {"ratings": {"userId": user["userId"]}}}
+    )
+    
+    # Add all new ratings
+    db.objects.update_one(
+        {"objectId": object_id},
+        {
+            "$push": {"ratings": {"$each": ratings_to_insert}},
+            "$set": {"updatedAt": now}
+        }
+    )
+    
+    # Mark assignment as completed
+    db.objects.update_one(
+        {"objectId": object_id, "assignments.userId": user["userId"]},
+        {
+            "$set": {
+                "assignments.$.completedAt": now
             }
-        )
-    else:
-        # Add new rating
-        db.objects.update_one(
-            {"objectId": object_id},
-            {
-                "$push": {"ratings": rating},
-                "$set": {"updatedAt": datetime.now(dt.timezone.utc)}
-            }
-        )
+        }
+    )
     
-    # Mark assignment as completed if this was the last required metric
-    # Only mark complete after all three metrics are rated
-    updated_obj = db.objects.find_one({"objectId": object_id})
-    user_ratings = [r for r in updated_obj.get("ratings", []) if r.get("userId") == user["userId"]]
-    user_metrics = set(r.get("metric", "general") for r in user_ratings)
-    
-    # If user has rated all three metrics, mark assignment as completed
-    if all(m in user_metrics for m in ["accuracy", "completeness", "clarity"]):
-        db.objects.update_one(
-            {"objectId": object_id, "assignments.userId": user["userId"]},
-            {
-                "$set": {
-                    "assignments.$.completedAt": datetime.now(dt.timezone.utc)
-                }
-            }
-        )
-    
-    # Update average ratings by metric
+    # Calculate and update average ratings
     updated_obj = db.objects.find_one({"objectId": object_id})
     ratings = updated_obj.get("ratings", [])
     
@@ -879,7 +875,7 @@ async def rate_object_description(
         avg_ratings = {}
         
         for m in metrics:
-            metric_ratings = [r["score"] for r in ratings if r.get("metric", "general") == m]
+            metric_ratings = [r["score"] for r in ratings if r.get("metric") == m]
             if metric_ratings:
                 avg_ratings[m] = round(sum(metric_ratings) / len(metric_ratings), 2)
         
@@ -898,10 +894,12 @@ async def rate_object_description(
     
     return {
         "success": True,
-        "message": f"{metric.capitalize()} rating submitted successfully",
-        "data": rating
+        "message": "All ratings submitted successfully",
+        "data": {
+            "objectId": object_id,
+            "ratings": ratings_to_insert
+        }
     }
-
 @app.get("/api/objects/{object_id}/ratings", response_model=Dict[str, Any])
 async def get_object_ratings(object_id: str, user=Depends(get_current_user)):
     """Get all ratings for an object"""
