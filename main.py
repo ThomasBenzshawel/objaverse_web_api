@@ -804,7 +804,8 @@ async def rate_object_description(
 ):
     """Rate an object's description"""
 
-    print(rating_data)
+    # log the rating data so that it can be seen in digital ocean logs
+    logging.info(f"Rating data: {rating_data}")
     obj = db.objects.find_one({"objectId": object_id})
     
     if not obj:
@@ -818,7 +819,6 @@ async def rate_object_description(
     metrics = rating_data.get("metrics", {})
     
     # Create a list to store all the rating entries
-    ratings_to_insert = []
     now = datetime.now(dt.timezone.utc)
     
     # Create the primary rating entry (for backward compatibility)
