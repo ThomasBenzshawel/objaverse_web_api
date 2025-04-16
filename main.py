@@ -795,62 +795,58 @@ async def get_completed_evaluation(
         "success": True,
         "data": obj
     }
+
 @app.post("/api/objects/{object_id}/rate", response_model=Dict[str, Any])
 async def rate_object_description(
     object_id: str,
     rating_data: Dict[str, Any] = Body(...),
     user=Depends(get_current_user)
 ):
-    """Rate an object's description with multiple metrics"""
+    """Rate an object's description"""
     obj = db.objects.find_one({"objectId": object_id})
     
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
     
-    # Make sure we have a ratings object with all three required metrics
-    if "ratings" not in rating_data or not isinstance(rating_data["ratings"], dict):
-        raise HTTPException(status_code=400, detail="Ratings object is required")
+    # Validate primary rating score
+    if "score" not in rating_data or not isinstance(rating_data["score"], int) or not (1 <= rating_data["score"] <= 5):
+        raise HTTPException(status_code=400, detail="Rating must be an integer between 1 and 5")
     
-    ratings_obj = rating_data["ratings"]
-    required_metrics = ["accuracy", "completeness", "clarity"]
+    # Get additional metrics if available
+    metrics = rating_data.get("metrics", {})
     
-    # Validate that all metrics are provided and are valid scores
-    for metric in required_metrics:
-        if metric not in ratings_obj or not isinstance(ratings_obj[metric], int) or not 1 <= ratings_obj[metric] <= 5:
-            raise HTTPException(status_code=400, detail=f"{metric} rating must be an integer between 1 and 5")
-    
-    # Get any comments
-    comments = rating_data.get("comments", "")
-    
-    # Create rating documents for each metric
-    now = datetime.now(dt.timezone.utc)
+    # Create a list to store all the rating entries
     ratings_to_insert = []
+    now = datetime.now(dt.timezone.utc)
     
-    for metric in required_metrics:
-        rating = {
-            "userId": user["userId"],
-            "score": ratings_obj[metric],
-            "metric": metric,
-            "timestamp": now
-        }
-        
-        # Add comment only to the first metric
-        if metric == "accuracy" and comments:
-            rating["comment"] = comments
-        
-        ratings_to_insert.append(rating)
+    # Create the primary rating entry (for backward compatibility)
+    primary_rating = {
+        "userId": user["userId"],
+        "score": rating_data["score"],
+        "timestamp": now
+    }
     
-    # Remove any existing ratings by this user for this object
+    # Add comment if provided
+    if "comment" in rating_data and rating_data["comment"]:
+        primary_rating["comment"] = rating_data["comment"]
+    
+    # Add metrics as separate fields in the primary rating
+    if metrics:
+        for metric_name, metric_value in metrics.items():
+            if isinstance(metric_value, int) and 1 <= metric_value <= 5:
+                primary_rating[metric_name] = metric_value
+    
+    # Remove existing ratings from this user
     db.objects.update_one(
         {"objectId": object_id},
         {"$pull": {"ratings": {"userId": user["userId"]}}}
     )
     
-    # Add all new ratings
+    # Add the new rating
     db.objects.update_one(
         {"objectId": object_id},
         {
-            "$push": {"ratings": {"$each": ratings_to_insert}},
+            "$push": {"ratings": primary_rating},
             "$set": {"updatedAt": now}
         }
     )
@@ -865,41 +861,40 @@ async def rate_object_description(
         }
     )
     
-    # Calculate and update average ratings
+    # Update average ratings
     updated_obj = db.objects.find_one({"objectId": object_id})
     ratings = updated_obj.get("ratings", [])
     
     if ratings:
-        # Calculate averages for each metric
-        metrics = set(r.get("metric", "general") for r in ratings)
-        avg_ratings = {}
-        
-        for m in metrics:
-            metric_ratings = [r["score"] for r in ratings if r.get("metric") == m]
-            if metric_ratings:
-                avg_ratings[m] = round(sum(metric_ratings) / len(metric_ratings), 2)
-        
-        # Overall average across all metrics
+        # Calculate overall average
         all_scores = [r["score"] for r in ratings]
-        avg_ratings["overall"] = round(sum(all_scores) / len(all_scores), 2)
+        avg_rating = round(sum(all_scores) / len(all_scores), 2)
+        
+        # Calculate averages for each metric if available
+        avg_ratings = {"overall": avg_rating}
+        
+        # Check if we have metric-specific ratings
+        metric_names = ["accuracy", "completeness", "clarity"]
+        for metric in metric_names:
+            metric_scores = [r.get(metric, r["score"]) for r in ratings if metric in r or "score" in r]
+            if metric_scores:
+                avg_ratings[metric] = round(sum(metric_scores) / len(metric_scores), 2)
         
         # Update in database
         db.objects.update_one(
             {"objectId": object_id},
             {"$set": {
                 "averageRatings": avg_ratings,
-                "averageRating": avg_ratings.get("overall", 0)  # Maintain backward compatibility
+                "averageRating": avg_rating
             }}
         )
     
     return {
         "success": True,
-        "message": "All ratings submitted successfully",
-        "data": {
-            "objectId": object_id,
-            "ratings": ratings_to_insert
-        }
+        "message": "Rating submitted successfully",
+        "data": primary_rating
     }
+
 @app.get("/api/objects/{object_id}/ratings", response_model=Dict[str, Any])
 async def get_object_ratings(object_id: str, user=Depends(get_current_user)):
     """Get all ratings for an object"""
