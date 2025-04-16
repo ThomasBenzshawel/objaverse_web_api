@@ -803,6 +803,8 @@ async def rate_object_description(
     user=Depends(get_current_user)
 ):
     """Rate an object's description"""
+
+    print(rating_data)
     obj = db.objects.find_one({"objectId": object_id})
     
     if not obj:
