@@ -796,24 +796,29 @@ async def rate_object_description(
     if "score" not in rating_data or not isinstance(rating_data["score"], int) or not (1 <= rating_data["score"] <= 5):
         raise HTTPException(status_code=400, detail="Rating must be an integer between 1 and 5")
     
+    # Get metric type (accuracy, completeness, clarity)
+    metric = rating_data.get("metric", "general")
+    
     # Create rating document
     rating = {
         "userId": user["userId"],
         "score": rating_data["score"],
+        "metric": metric,
         "timestamp": datetime.now(dt.timezone.utc)
     }
     
     # Add comment if provided
-    if "comment" in rating_data:
+    if "comment" in rating_data and rating_data["comment"]:
         rating["comment"] = rating_data["comment"]
     
-    # Check if user has already rated this object
-    existing_rating = next((r for r in obj.get("ratings", []) if r.get("userId") == user["userId"]), None)
+    # Check if user has already rated this object with this metric
+    existing_rating = next((r for r in obj.get("ratings", []) 
+                           if r.get("userId") == user["userId"] and r.get("metric", "general") == metric), None)
     
     if existing_rating:
         # Update existing rating
         db.objects.update_one(
-            {"objectId": object_id, "ratings.userId": user["userId"]},
+            {"objectId": object_id, "ratings": {"$elemMatch": {"userId": user["userId"], "metric": metric}}},
             {
                 "$set": {
                     "ratings.$": rating,
@@ -831,20 +836,53 @@ async def rate_object_description(
             }
         )
     
-    # Update average rating
+    # Mark assignment as completed if this was the last required metric
+    # Only mark complete after all three metrics are rated
+    updated_obj = db.objects.find_one({"objectId": object_id})
+    user_ratings = [r for r in updated_obj.get("ratings", []) if r.get("userId") == user["userId"]]
+    user_metrics = set(r.get("metric", "general") for r in user_ratings)
+    
+    # If user has rated all three metrics, mark assignment as completed
+    if all(m in user_metrics for m in ["accuracy", "completeness", "clarity"]):
+        db.objects.update_one(
+            {"objectId": object_id, "assignments.userId": user["userId"]},
+            {
+                "$set": {
+                    "assignments.$.completedAt": datetime.now(dt.timezone.utc)
+                }
+            }
+        )
+    
+    # Update average ratings by metric
     updated_obj = db.objects.find_one({"objectId": object_id})
     ratings = updated_obj.get("ratings", [])
     
     if ratings:
-        avg_rating = sum(r["score"] for r in ratings) / len(ratings)
+        # Calculate averages for each metric
+        metrics = set(r.get("metric", "general") for r in ratings)
+        avg_ratings = {}
+        
+        for m in metrics:
+            metric_ratings = [r["score"] for r in ratings if r.get("metric", "general") == m]
+            if metric_ratings:
+                avg_ratings[m] = round(sum(metric_ratings) / len(metric_ratings), 2)
+        
+        # Overall average across all metrics
+        all_scores = [r["score"] for r in ratings]
+        avg_ratings["overall"] = round(sum(all_scores) / len(all_scores), 2)
+        
+        # Update in database
         db.objects.update_one(
             {"objectId": object_id},
-            {"$set": {"averageRating": round(avg_rating, 2)}}
+            {"$set": {
+                "averageRatings": avg_ratings,
+                "averageRating": avg_ratings.get("overall", 0)  # Maintain backward compatibility
+            }}
         )
     
     return {
         "success": True,
-        "message": "Rating submitted successfully",
+        "message": f"{metric.capitalize()} rating submitted successfully",
         "data": rating
     }
 
