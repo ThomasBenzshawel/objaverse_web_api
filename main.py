@@ -703,7 +703,6 @@ async def assign_objects_to_users(
         "data": results
     }
 
-
 @app.post("/api/completed", response_model=Dict[str, Any])
 async def get_completed_evaluations(
     request_data: Dict[str, str],
@@ -711,32 +710,36 @@ async def get_completed_evaluations(
     limit: int = 10,
     user=Depends(get_current_user)
 ):
-    """Get objects that have been rated by the specified user"""
+    """Get objects that have been fully rated by the specified user"""
     userId = request_data.get("userId")
     if not userId:
         raise HTTPException(status_code=400, detail="userId is required")
-    
+   
     skip = (page - 1) * limit
-    
-    # Query objects that have ratings from this user
+   
+    # Query objects that have all three required metrics rated by this user
     query = {
         "assignments.userId": userId,
-        "ratings": {"$elemMatch": {"userId": userId}}
+        "$and": [
+            {"ratings": {"$elemMatch": {"userId": userId, "metric": "accuracy"}}},
+            {"ratings": {"$elemMatch": {"userId": userId, "metric": "completeness"}}},
+            {"ratings": {"$elemMatch": {"userId": userId, "metric": "clarity"}}}
+        ]
     }
-    
+   
     objects = list(db.objects.find(query).skip(skip).limit(limit))
     total = db.objects.count_documents(query)
-    
-    # Convert ObjectId to string for JSON serialization
+   
+    # Process each object
     for obj in objects:
         obj["_id"] = str(obj["_id"])
-        
+       
         # Mark assignment as completed if not already
         for assignment in obj.get("assignments", []):
             if assignment.get("userId") == userId and not assignment.get("completedAt"):
                 db.objects.update_one(
                     {
-                        "objectId": obj["objectId"], 
+                        "objectId": obj["objectId"],
                         "assignments.userId": userId
                     },
                     {
@@ -745,7 +748,20 @@ async def get_completed_evaluations(
                         }
                     }
                 )
-    
+        
+        # Add user's ratings in a structured format for easier template access
+        user_ratings = {
+            "accuracy": 0,
+            "completeness": 0,
+            "clarity": 0
+        }
+        
+        for rating in obj.get("ratings", []):
+            if rating.get("userId") == userId and rating.get("metric") in user_ratings:
+                user_ratings[rating.get("metric")] = rating.get("score", 0)
+        
+        obj["user_ratings"] = user_ratings
+   
     return {
         "success": True,
         "count": len(objects),
