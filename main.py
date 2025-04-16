@@ -632,21 +632,25 @@ async def get_completed_evaluations(
     limit: int = 10,
     user=Depends(get_current_user)
 ):
-    """Get objects that have been fully rated by the specified user"""
+    """Get objects that have been rated by the specified user with all required metrics"""
     userId = request_data.get("userId")
     if not userId:
         raise HTTPException(status_code=400, detail="userId is required")
    
     skip = (page - 1) * limit
    
-    # Query objects that have all three required metrics rated by this user
+    # Query objects that have been rated by this user with all three metrics
+    # The new structure has all metrics as fields in a single rating document
     query = {
         "assignments.userId": userId,
-        "$and": [
-            {"ratings": {"$elemMatch": {"userId": userId, "metric": "accuracy"}}},
-            {"ratings": {"$elemMatch": {"userId": userId, "metric": "completeness"}}},
-            {"ratings": {"$elemMatch": {"userId": userId, "metric": "clarity"}}}
-        ]
+        "ratings": {
+            "$elemMatch": {
+                "userId": userId,
+                "accuracy": {"$exists": True},
+                "completeness": {"$exists": True},
+                "clarity": {"$exists": True}
+            }
+        }
     }
    
     objects = list(db.objects.find(query).skip(skip).limit(limit))
@@ -671,17 +675,23 @@ async def get_completed_evaluations(
                     }
                 )
         
-        # Add user's ratings in a structured format for easier template access
+        # Extract user's ratings from the single rating document
         user_ratings = {
             "accuracy": 0,
-            "completeness": 0,
+            "completeness": 0, 
             "clarity": 0
         }
         
+        # Find this user's rating document
         for rating in obj.get("ratings", []):
-            if rating.get("userId") == userId and rating.get("metric") in user_ratings:
-                user_ratings[rating.get("metric")] = rating.get("score", 0)
+            if rating.get("userId") == userId:
+                # Extract metrics from the rating document
+                user_ratings["accuracy"] = rating.get("accuracy", rating.get("score", 0))
+                user_ratings["completeness"] = rating.get("completeness", 0)
+                user_ratings["clarity"] = rating.get("clarity", 0)
+                break
         
+        # Add user's ratings to the object for easier access in templates
         obj["user_ratings"] = user_ratings
    
     return {
@@ -692,6 +702,7 @@ async def get_completed_evaluations(
         "pages": (total + limit - 1) // limit,
         "data": objects
     }
+
 
 @app.get("/api/completed/{object_id}", response_model=Dict[str, Any])
 async def get_completed_evaluation(
