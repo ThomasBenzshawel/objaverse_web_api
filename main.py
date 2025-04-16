@@ -728,6 +728,7 @@ async def rate_object_description(
 
     # log the rating data so that it can be seen in digital ocean logs
     logging.info(f"Rating data: {rating_data}")
+    print(f"Rating data: {rating_data}")
     obj = db.objects.find_one({"objectId": object_id})
     
     if not obj:
