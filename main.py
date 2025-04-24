@@ -788,25 +788,34 @@ async def rate_object_description(
 ):
     """Rate an object's description"""
     obj = db.objects.find_one({"objectId": object_id})
-    
+   
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
-    
-    # Validate rating
-    if "score" not in rating_data or not isinstance(rating_data["score"], int) or not (1 <= rating_data["score"] <= 5):
+   
+    # Check for unknown object flag in metrics
+    is_unknown_object = False
+    if "metrics" in rating_data and rating_data.get("metrics", {}).get("unknown_object", False):
+        is_unknown_object = True
+   
+    # Validate rating (skip validation for unknown objects)
+    if not is_unknown_object and ("score" not in rating_data or not isinstance(rating_data["score"], int) or not (1 <= rating_data["score"] <= 5)):
         raise HTTPException(status_code=400, detail="Rating must be an integer between 1 and 5")
-    
+   
     # Create rating document
     rating = {
         "userId": user["userId"],
         "score": rating_data["score"],
         "timestamp": datetime.now(dt.timezone.utc)
     }
-    
+   
+    # Store metrics if provided
+    if "metrics" in rating_data:
+        rating["metrics"] = rating_data["metrics"]
+   
     # Add comment if provided
     if "comment" in rating_data:
         rating["comment"] = rating_data["comment"]
-    
+
     # Check if user has already rated this object
     existing_rating = next((r for r in obj.get("ratings", []) if r.get("userId") == user["userId"]), None)
     
@@ -872,4 +881,4 @@ async def get_object_ratings(object_id: str, user=Depends(get_current_user)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 3000)), log_level="info", workers=4)
