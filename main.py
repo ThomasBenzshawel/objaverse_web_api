@@ -762,9 +762,6 @@ async def rate_object_description(
     
     # Create the primary rating entry (for backward compatibility)
     primary_rating = {
-   
-    # Create rating document
-    rating = {
         "userId": user["userId"],
         "score": rating_data["score"],
         "timestamp": now
@@ -772,7 +769,7 @@ async def rate_object_description(
    
     # Store metrics if provided
     if "metrics" in rating_data:
-        rating["metrics"] = rating_data["metrics"]
+        primary_rating["metrics"] = rating_data["metrics"]
    
     # Add comment if provided
     if "comment" in rating_data and rating_data["comment"]:
@@ -809,7 +806,7 @@ async def rate_object_description(
         }
     )
     if "comment" in rating_data:
-        rating["comment"] = rating_data["comment"]
+        primary_rating["comment"] = rating_data["comment"]
 
     # Check if user has already rated this object
     existing_rating = next((r for r in obj.get("ratings", []) if r.get("userId") == user["userId"]), None)
@@ -820,7 +817,7 @@ async def rate_object_description(
             {"objectId": object_id, "ratings.userId": user["userId"]},
             {
                 "$set": {
-                    "ratings.$": rating,
+                    "ratings.$": primary_rating,
                     "updatedAt": datetime.now(dt.timezone.utc)
                 }
             }
@@ -830,7 +827,7 @@ async def rate_object_description(
         db.objects.update_one(
             {"objectId": object_id},
             {
-                "$push": {"ratings": rating},
+                "$push": {"ratings": primary_rating},
                 "$set": {"updatedAt": datetime.now(dt.timezone.utc)}
             }
         )
