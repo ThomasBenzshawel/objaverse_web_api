@@ -763,11 +763,11 @@ async def rate_object_description(
 ):
     """Rate an object's description"""
 
-    # log the rating data so that it can be seen in digital ocean logs
+    # Log the rating data for debugging
     logging.info(f"Rating data: {rating_data}")
-    print(f"Rating data: {rating_data}")
+    
+    # Check if object exists
     obj = db.objects.find_one({"objectId": object_id})
-   
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
    
@@ -783,10 +783,8 @@ async def rate_object_description(
     # Get additional metrics if available
     metrics = rating_data.get("metrics", {})
     
-    # Create a list to store all the rating entries
+    # Create the rating document
     now = datetime.now(dt.timezone.utc)
-    
-    # Create the primary rating entry (for backward compatibility)
     primary_rating = {
         "userId": user["userId"],
         "score": rating_data["score"],
@@ -804,16 +802,16 @@ async def rate_object_description(
     # Add metrics as separate fields in the primary rating
     if metrics:
         for metric_name, metric_value in metrics.items():
-            if isinstance(metric_value, int) and 1 <= metric_value <= 5:
+            if isinstance(metric_value, (int, bool)) or metric_name == "unknown_object":
                 primary_rating[metric_name] = metric_value
     
-    # Remove existing ratings from this user
+    # First remove any existing rating from this user
     db.objects.update_one(
         {"objectId": object_id},
         {"$pull": {"ratings": {"userId": user["userId"]}}}
     )
     
-    # Add the new rating
+    # Then add the new rating in a separate operation
     db.objects.update_one(
         {"objectId": object_id},
         {
@@ -831,32 +829,6 @@ async def rate_object_description(
             }
         }
     )
-    if "comment" in rating_data:
-        primary_rating["comment"] = rating_data["comment"]
-
-    # Check if user has already rated this object
-    existing_rating = next((r for r in obj.get("ratings", []) if r.get("userId") == user["userId"]), None)
-    
-    if existing_rating:
-        # Update existing rating
-        db.objects.update_one(
-            {"objectId": object_id, "ratings.userId": user["userId"]},
-            {
-                "$set": {
-                    "ratings.$": primary_rating,
-                    "updatedAt": datetime.now(dt.timezone.utc)
-                }
-            }
-        )
-    else:
-        # Add new rating
-        db.objects.update_one(
-            {"objectId": object_id},
-            {
-                "$push": {"ratings": primary_rating},
-                "$set": {"updatedAt": datetime.now(dt.timezone.utc)}
-            }
-        )
     
     # Update average ratings
     updated_obj = db.objects.find_one({"objectId": object_id})
