@@ -639,16 +639,27 @@ async def get_completed_evaluations(
    
     skip = (page - 1) * limit
    
-    # Query objects that have been rated by this user with all three metrics
-    # The new structure has all metrics as fields in a single rating document
+    # Modified query to include both standard ratings and unknown objects
     query = {
         "assignments.userId": userId,
         "ratings": {
             "$elemMatch": {
                 "userId": userId,
-                "accuracy": {"$exists": True},
-                "completeness": {"$exists": True},
-                "clarity": {"$exists": True}
+                "$or": [
+                    # Standard ratings with accuracy and completeness
+                    {
+                        "accuracy": {"$exists": True},
+                        "completeness": {"$exists": True}
+                    },
+                    # Unknown objects
+                    {
+                        "metrics.unknown_object": True
+                    },
+                    # Legacy format or partial evaluations (just to be safe)
+                    {
+                        "score": {"$exists": True}
+                    }
+                ]
             }
         }
     }
@@ -682,18 +693,33 @@ async def get_completed_evaluations(
             "clarity": 0
         }
         
+        is_unknown_object = False
+        
         # Find this user's rating document
         for rating in obj.get("ratings", []):
             if rating.get("userId") == userId:
-                # Extract metrics from the rating document
-                user_ratings["accuracy"] = rating.get("accuracy", rating.get("score", 0))
-                user_ratings["completeness"] = rating.get("completeness", 0)
-                user_ratings["clarity"] = rating.get("clarity", 0)
+                # Check if this is an unknown object
+                if rating.get("metrics", {}).get("unknown_object", False):
+                    is_unknown_object = True
+                    # Set default values for unknown objects
+                    user_ratings = {
+                        "accuracy": 0,
+                        "completeness": 0,
+                        "clarity": 0
+                    }
+                else:
+                    # Extract metrics from the rating document
+                    user_ratings["accuracy"] = rating.get("accuracy", rating.get("score", 0))
+                    user_ratings["completeness"] = rating.get("completeness", 0)
+                    user_ratings["clarity"] = rating.get("clarity", 0)
                 break
         
         # Add user's ratings to the object for easier access in templates
         obj["user_ratings"] = user_ratings
-   
+        obj["is_unknown_object"] = is_unknown_object
+
+    
+    print(f"Completed evaluations: {len(objects)}")
     return {
         "success": True,
         "count": len(objects),
