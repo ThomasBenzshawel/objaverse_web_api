@@ -884,6 +884,81 @@ async def get_object_ratings(object_id: str, user=Depends(get_current_user)):
         }
     }
 
+@app.delete("/api/ratings/{object_id}/{user_id}", response_model=Dict[str, Any])
+async def delete_rating(
+    object_id: str,
+    user_id: str,
+    user=Depends(get_current_user)
+):
+    """Delete a specific user's rating for an object"""
+    # Check if user is admin
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can delete ratings")
+    
+    # Check if object exists
+    obj = db.objects.find_one({"objectId": object_id})
+    if not obj:
+        raise HTTPException(status_code=404, detail="Object not found")
+    
+    # Check if rating exists
+    ratings = obj.get("ratings", [])
+    rating_exists = any(r.get("userId") == user_id for r in ratings)
+    
+    if not rating_exists:
+        raise HTTPException(status_code=404, detail=f"No rating found for user {user_id}")
+    
+    # Remove the rating
+    db.objects.update_one(
+        {"objectId": object_id},
+        {
+            "$pull": {"ratings": {"userId": user_id}},
+            "$set": {"updatedAt": datetime.now(dt.timezone.utc)}
+        }
+    )
+    
+    # Update average ratings
+    updated_obj = db.objects.find_one({"objectId": object_id})
+    updated_ratings = updated_obj.get("ratings", [])
+    
+    if updated_ratings:
+        # Calculate overall average
+        all_scores = [r["score"] for r in updated_ratings if "score" in r]
+        avg_rating = round(sum(all_scores) / len(all_scores), 2) if all_scores else 0
+        
+        # Calculate averages for each metric if available
+        avg_ratings = {"overall": avg_rating}
+        
+        # Check if we have metric-specific ratings
+        metric_names = ["accuracy", "completeness", "clarity"]
+        for metric in metric_names:
+            metric_scores = [r.get(metric, r["score"]) for r in updated_ratings if metric in r or "score" in r]
+            if metric_scores:
+                avg_ratings[metric] = round(sum(metric_scores) / len(metric_scores), 2)
+        
+        # Update in database
+        db.objects.update_one(
+            {"objectId": object_id},
+            {"$set": {
+                "averageRatings": avg_ratings,
+                "averageRating": avg_rating
+            }}
+        )
+    else:
+        # No ratings left, remove averages
+        db.objects.update_one(
+            {"objectId": object_id},
+            {"$unset": {
+                "averageRatings": "",
+                "averageRating": ""
+            }}
+        )
+    
+    return {
+        "success": True,
+        "message": f"Rating for user {user_id} deleted successfully",
+    }
+
+
 
 
 if __name__ == "__main__":
